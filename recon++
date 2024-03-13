@@ -1,0 +1,152 @@
+#!/bin/bash
+
+
+RED="\033[1;31m"
+YEL="\033[1;33m"
+GRN="\033[1;32m"
+RST="\033[0m"
+HLT="\033[1;43m"
+
+printf "Enter domain:"
+read url
+
+dir=$(echo "$url" | cut -d "." -f 1)
+
+#check dirs and files
+if [ ! -d "recon" ];then
+        mkdir recon && cd recon
+else
+        cd recon
+fi
+if [ ! -d "$dir" ];then
+        mkdir $dir && cd $dir
+else
+        cd $dir
+fi
+
+#Subdomain Enumeration
+echo -e  "${GRN}[+] Enumerating Subdomains...${RST}"
+
+#assetfinder
+echo -e  "${GRN}[+] Searching ${YEL}assetfinder...${RST}"
+assetfinder $url >> assets.txt
+cat assets.txt | anew domains.txt > /dev/null
+rm assets.txt
+
+#sublist3r
+echo -e  "${GRN}[+] Checking sublist3r...${RST}"
+/opt/Sublist3r/sublist3r.py -d $url -t 10 -v -o subls.txt > /dev/null
+cat subls.txt | anew domains.txt > /dev/null
+rm subls.txt
+
+#subfinder
+echo -e  "${GRN}[+] Checking subfinder...${RST}"
+subfinder -d $url -v -o sub.txt > /dev/null
+cat sub.txt | anew domains.txt > /dev/null
+rm sub.txt
+
+#crt.sh
+echo -e  "${GRN}[+] Checking crt.sh...${RST}"
+curl "https://crt.sh/?q=$url&output=json" -o crt.txt
+jq -r ".[] | .name_value" crt.txt >> crt-out.txt
+sed -i 's/\*\.//' crt-out.txt
+cat crt-out.txt | anew domains.txt > /dev/null
+rm crt.txt crt-out.txt
+
+#amass
+#echo -e "${GRN}[+] Double checking for subdomains with amass...${RST}"
+#amass enum -d $url >> amass-sub.txt
+#cat amass-sub.txt | anew domains.txt > /dev/null
+#rm amass-sub.txt
+
+#DirRunner
+#echo -e  "${GRN}[+] Checking DirRunner...${RST}"
+
+echo -e "${GRN}[**] Finished Subdomain Enumeration [**]${RST}"
+sleep 1
+
+#Alive Hosts
+echo -e  "${GRN}[+] Checking Alive Hosts...${RST}"
+
+#httpx
+echo -e "${GRN}[+] Probing with HTTPX...${RST}"
+cat domains.txt | sort -u | httpx -sc -title -ip -td -o httpx-out.txt > /dev/null
+
+#httprobe
+echo -e "${GRN}[+] Probing with HTTProbe...${RST}"
+cat domains.txt | sort -u | httprobe -s -p https:443 | sed 's/https\?:\/\///' | tr -d ':443' >> a.txt
+sort -u a.txt >> alive.txt
+rm a.txt
+
+#filter by status codes
+cat httpx-out.txt | grep 200 >> 200.txt
+cat httpx-out.txt | grep 301 >> 302.txt
+cat httpx-out.txt | grep 302 >> 302.txt
+cat httpx-out.txt | grep 401 >> 403.txt
+cat httpx-out.txt | grep 403 >> 403.txt
+cat httpx-out.txt | grep 404 >> 404.txt
+#for importing into spreadsheet
+cat 200.txt >> httpx-final.txt
+cat 302.txt >> httpx-final.txt
+cat 403.txt >> httpx-final.txt
+cat 404.txt >> httpx-final.txt
+
+echo -e "${GRN}[**] Finished Probing [**]${RST}"
+
+#Subdomain Takeovers
+echo -e "${GRN}[+] Checking for possible subdomain takeover...${RST}"
+subjack -w domains.txt -t 100 -timeout 30 -ssl -c ~/go/pkg/mod/github.com/haccer/subjack@v0.0.0-20201112041112-49c51e57deab/fingerprints.json -v 3 >> possible_takeovers.txt
+cat possible_takeovers.txt | grep -v "Not" >> takeovers.txt
+
+#Nmap
+echo -e "${GRN}[+] Scanning for open ports...${RST}"
+nmap -iL alive.txt -T4 -oA nmap-out.txt
+
+#Wayback
+#echo -e "${GRN}[+] Scraping wayback data...${RST}"
+#cat domains.txt | waybackurls >> wayback-out.txt
+#sort -u wayback-out.txt
+
+#echo -e "${GRN}[+] Pulling and compiling all possible params found in wayback data...${RST}"
+#cat wayback-out.txt | grep '?*=' | cut -d '=' -f 1 | sort -u >> wayback-params.txt
+#for line in $(cat wayback-params.txt);do echo $line'=';done
+
+#echo -e "${GRN}[+] Pulling and compiling js/php/aspx/jsp/json files from wayback output...${RST}"
+#for line in $(cat wayback-out.txt);do
+#        ext="${line##*.}"
+#        if [[ "$ext" == "js" ]]; then
+#                echo $line >> js1.txt
+#                sort -u js1.txt >> js.txt
+#        fi
+#        if [[ "$ext" == "html" ]];then
+#                echo $line >> jsp1.txt
+#                sort -u jsp1.txt >> jsp.txt
+#        fi
+#        if [[ "$ext" == "json" ]];then
+#                echo $line >> json1.txt
+#                sort -u json1.txt >> json.txt
+#        fi
+#        if [[ "$ext" == "php" ]];then
+#                echo $line >> php1.txt
+#                sort -u php1.txt >> php.txt
+#        fi
+#        if [[ "$ext" == "aspx" ]];then
+#                echo $line >> aspx1.txt
+#                sort -u aspx1.txt >> aspx.txt
+#        fi
+#done
+
+#rm -f js1.txt jsp1.txt json1.txt php1.txt aspx1.tx
+
+##403 bypasses
+echo -e "${GRN}[+] Checking 403 bypasses ... ${RST}"
+cat 403.txt | cut -d " " -f 1 >> 403-stripped.txt
+for line in $(cat 403-stripped.txt);do
+        /opt/bypass-403/bypass-403.sh $line >> 403-bypass-out.txt
+done
+cat 403-bypass-out.txt | grep 200 >> 403-bypass.txt
+echo -e "${GRN}[**] Finished 403 bypasses [**]${RST}"
+
+#echo "[+] Running eyewitness against all compiled domains..."
+#python3 /opt/EyeWitness/Python/EyeWitness.py --web -f alive.txt -d eyewitness --resolve
+echo -e "${GRN}[*] Recon Completed, so far...${RST}"
